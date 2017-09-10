@@ -1,123 +1,164 @@
 #define FASTLED_ESP8266_RAW_PIN_ORDER
 #include "FastLED.h"
+#include "config.h"
 
-#define NUM_LEDS 54
-#define DATA_PIN 4
-#define USB_PIN 15
+#include <PubSubClient.h>
 
-//STATES
-#define INITIAL_STATE 0
-#define UPDATE_STATE 1
+#include <ESP8266mDNS.h>
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
+
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include <EEPROM.h>
+
+#include <ESP8266WebServer.h>
+
+inline int max(int a, int b) { return ((a)>(b)?(a):(b)); }
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+ESP8266WebServer webServer(80);
+
+bool OTAUpdate = false;
+long OTATimeout = 60*1000;
+long OTAend=0;
 
 //COMMANDS
 uint8_t _State;
+uint8_t tv_on = 0;
 
 //NeoPixel
-uint8_t R = 0;
-uint8_t G = 1;
-uint8_t B = 2;
-uint8_t A = 3;
+uint8_t INDEX_H = 0;
+uint8_t INDEX_S = 1;
+uint8_t INDEX_V = 2;
 
-bool updateRGB = false;
+bool updateColor = false;
 uint8_t _StepCount = 1;
 
 CRGB _leds[NUM_LEDS];
 // Set initial color
-uint8_t _rgbaCurrent[4] = {255,255,255,0};
+CHSV _hsvCurrent = {255, 255, 255};
 // Initialize color variables
-uint8_t _rgbaUpdated[4] = {255,255,255,255};
-
-int DEBUG = 1;
+CHSV _hsvUpdated = {255, 255, 255};
 
 void setup() {
   pinMode(USB_PIN, INPUT);
   Serial.begin(115200);
+
+  // WIFI and OTA
+  setup_wifi();
+  webServer.on("/update", handleRoot);
+  webServer.begin();
+
+  #ifdef DEBUG
+  Serial.println("HTTP server started");
+  #endif
+
+  bindOTAEvents();
+
+  // MQTT
+  client.setServer(MQTT_SERVER, MQTT_PORT);
+  client.setCallback(mqtt_callback);
 
   //NeoPixel
   FastLED.addLeds<NEOPIXEL, DATA_PIN>(_leds, NUM_LEDS);
   FastLED.setDither(0);
 
   _State = UPDATE_STATE;
-  updateRGB = true;
+  updateColor = true;
 }
 
 void loop() {
-  int val = digitalRead(USB_PIN);   // read the input pin
-
-  if (_rgbaCurrent[A] != val) {
-    _State = UPDATE_STATE;
-    updateRGB = true;
-  }
-
-  if (val == 0) {
-    _rgbaUpdated[A] = 0;
+  if (OTAUpdate && millis() - OTAend > 0) {
+    ArduinoOTA.handle();
   } else {
-    _rgbaUpdated[A] = 255;
-  }
+    OTAUpdate=false;
+    webServer.handleClient();
 
-  mainLoop();
-}
-void mainLoop(){
-  if(_State==UPDATE_STATE){
-    if(updateRGB){
-        _rgbaCurrent[R] = calculateVal(_rgbaCurrent[R], _rgbaUpdated[R]);
-        _rgbaCurrent[G] = calculateVal(_rgbaCurrent[G], _rgbaUpdated[G]);
-        _rgbaCurrent[B] = calculateVal(_rgbaCurrent[B], _rgbaUpdated[B]);
-        for(int j=0;j<NUM_LEDS;j++){
-          _leds[j].r = _rgbaCurrent[R];
-          _leds[j].g = _rgbaCurrent[G];
-          _leds[j].b = _rgbaCurrent[B];
-        }
+    if (!client.connected()) {
+      #ifdef DEBUG
+      Serial.println("Not connected");
+      #endif
+      reconnect();
     }
 
-    _rgbaCurrent[A] = calculateVal(_rgbaCurrent[A], _rgbaUpdated[A]);
-    FastLED.setBrightness(_rgbaCurrent[A]);
+    client.loop();
+
+    // read the input pin
+    uint8_t is_tv_on = digitalRead(USB_PIN);
+
+    // if (is_tv_on != tv_on) {
+    //   _State = UPDATE_STATE;
+    //   updateColor = true;
+    // }
+    //
+    // if (tv_on == 0) {
+    //   _hsvUpdated.v = 0;
+    // } else {
+    //   _hsvUpdated.v = 100;
+    // }
+
+    mainLoop();
+  }
+}
+
+void mainLoop(){
+  if (_State==UPDATE_STATE) {
+    if (updateColor) {
+      _hsvCurrent.h = calculateVal(_hsvCurrent.h, _hsvUpdated.h);
+      _hsvCurrent.s = calculateVal(_hsvCurrent.s, _hsvUpdated.s);
+
+      fill_solid(_leds, NUM_LEDS, _hsvCurrent);
+    }
+
+    _hsvCurrent.v = calculateVal(_hsvCurrent.v, _hsvUpdated.v);
+    FastLED.setBrightness(_hsvCurrent.v);
     FastLED.show();
 
-    if(DEBUG){
-      Serial.print(_rgbaCurrent[R]);
-      Serial.print(",");
-      Serial.print(_rgbaCurrent[G]);
-      Serial.print(",");
-      Serial.print(_rgbaCurrent[B]);
-      Serial.print(",");
-      Serial.println(_rgbaCurrent[A]);
-    }
+    #ifdef DEBUG
+    Serial.print(_hsvCurrent.h);
+    Serial.print(",");
+    Serial.print(_hsvCurrent.s);
+    Serial.print(",");
+    Serial.println(_hsvCurrent.v);
+    #endif
 
-    if(_rgbaCurrent[R] != _rgbaUpdated[R] || _rgbaCurrent[G] != _rgbaUpdated[G] || _rgbaCurrent[B] != _rgbaUpdated[B]){
-      updateRGB = true;
-    }else{
-      updateRGB = false;
-      if(_rgbaCurrent[A] == _rgbaUpdated[A]){
+    if (_hsvCurrent.h != _hsvUpdated.h || _hsvCurrent.s != _hsvUpdated.s) {
+      updateColor = true;
+    } else {
+      updateColor = false;
+      if (_hsvCurrent.v == _hsvUpdated.v) {
         _State = INITIAL_STATE;
       }
     }
   }
 }
+
 //Serial
-void receiveData(char *_serialBytes){
+void setNewColor(CHSV hsv){
+  #ifdef DEBUG
   Serial.println("Update Values");
+  #endif
+
   //Update values
-  _rgbaUpdated[R] = _serialBytes[R];
-  _rgbaUpdated[G] = _serialBytes[G];
-  _rgbaUpdated[B] = _serialBytes[B];
-  _rgbaUpdated[A] = percentToRawValue(_serialBytes[A]);
+  _hsvUpdated.h = hsv.h;
+  _hsvUpdated.s = hsv.s;
+  _hsvUpdated.v = hsv.v;
 
   calculateStep();
-  updateRGB = true;
+  updateColor = true;
 
-  if(DEBUG){
-    Serial.println("New Values:");
-    Serial.print(_rgbaUpdated[R]);
-    Serial.print(",");
-    Serial.print(_rgbaUpdated[G]);
-    Serial.print(",");
-    Serial.print(_rgbaUpdated[B]);
-    Serial.print(",");
-    Serial.println(_rgbaUpdated[A]);
-    Serial.print("Step:");
-    Serial.println(_StepCount);
-  }
+  #ifdef DEBUG
+  Serial.println("New Values:");
+  Serial.print(_hsvUpdated.h);
+  Serial.print(",");
+  Serial.print(_hsvUpdated.s);
+  Serial.print(",");
+  Serial.println(_hsvUpdated.v);
+  Serial.print("Step:");
+  Serial.println(_StepCount);
+  #endif
 
   _State = UPDATE_STATE;
 }
@@ -125,42 +166,46 @@ void receiveData(char *_serialBytes){
 /*
   NeoPixel
 */
-void setBrightness(int brightness){
+void setBrightness(int brightness) {
   FastLED.setBrightness(brightness);
-  _rgbaCurrent[A] = _rgbaUpdated[A] = brightness;
+  _hsvCurrent.v = _hsvUpdated.v = brightness;
   FastLED.show();
 }
-void setColor(CRGB color, uint8_t brightness) {
-  for(int i=0;i<NUM_LEDS;i++){
-    _leds[i].setRGB(color.r, color.g, color.b);
+
+void setColor(CHSV color) {
+  for(int i=0; i<NUM_LEDS; i++){
+    _leds[i].setHSV(color.h, color.s, color.v);
   }
-  FastLED.setBrightness(brightness);
-  _rgbaCurrent[R] = _rgbaUpdated[R] = color.r;
-  _rgbaCurrent[G] = _rgbaUpdated[G] = color.g;
-  _rgbaCurrent[B] = _rgbaUpdated[B] = color.b;
-  _rgbaCurrent[A] = _rgbaUpdated[A] = brightness;
+
+  FastLED.setBrightness(color.v);
+  _hsvCurrent.h = _hsvUpdated.h = color.h;
+  _hsvCurrent.s = _hsvUpdated.s = color.s;
+  _hsvCurrent.v = _hsvUpdated.v = color.v;
   FastLED.show();
 }
+
 int percentToRawValue(int percent){
   return 2.55*percent;
 }
+
 /*
   Test Helpers
 */
-void blink(){
-  setColor(CRGB(255,255,255),255);
+void blink () {
+  setColor(CHSV(255, 255, 255));
   delay(100);
-  setColor(CRGB(0,0,0),0);
+  setColor(CHSV(0, 0, 0));
 }
+
 /*
   CrossFade to Value RGBA Helpers
 */
 int calculateVal(int val, int finalVal) {
-  if(val!=finalVal){
-    if(abs(val-finalVal) <= _StepCount-1){
+  if (val != finalVal) {
+    if (abs(val - finalVal) <= _StepCount - 1){
       val = finalVal;
     }else{
-      if (val<finalVal) {
+      if (val < finalVal) {
           val += _StepCount;
       } else {
           val -= _StepCount;
@@ -169,19 +214,189 @@ int calculateVal(int val, int finalVal) {
     return val;
   }
 }
-int calculateStep(){
-  uint8_t max = max(max(max(abs(_rgbaCurrent[R]-_rgbaUpdated[R]),abs(_rgbaCurrent[G]-_rgbaUpdated[G])),abs(_rgbaCurrent[B]-_rgbaUpdated[B])),abs(_rgbaCurrent[A]-_rgbaUpdated[A]));
-  if(max>63){
-    if(max>127){
-      if(max>191){
+
+int calculateStep () {
+  uint8_t hdiff = abs(_hsvCurrent.h-_hsvUpdated.h);
+  uint8_t sdiff = abs(_hsvCurrent.s-_hsvUpdated.s);
+  uint8_t vdiff = abs(_hsvCurrent.v-_hsvUpdated.v);
+  int max_val = max(max(hdiff, sdiff), vdiff);
+  if (max_val > 63){
+    if (max_val > 127){
+      if (max_val > 191){
         _StepCount = 5;
-      }else{
+      } else {
         _StepCount = 3;
       }
-    }else{
+    } else {
       _StepCount = 2;
     }
   } else {
     _StepCount = 1;
   }
+}
+
+void mqtt_callback (const char* topic, byte* payload, unsigned int length) {
+  #ifdef DEBUG
+  Serial.print("Got message from ");
+  Serial.println(topic);
+  Serial.print("Payload: ");
+  Serial.println((int) payload[0]);
+  #endif
+
+  if (strcmp(topic, MQTT_TOPIC_POWER)==0) {
+    // get power status
+
+  } else if (strcmp(topic, MQTT_TOPIC_SETPOWER) == 0) {
+    // set power status
+  } else if (strcmp(topic, MQTT_TOPIC_BRIGHTNESS) == 0) {
+    // get brightness
+  } else if (strcmp(topic, MQTT_TOPIC_SETBRIGHTNESS) == 0) {
+    // set brightness
+  } else if (strcmp(topic, MQTT_TOPIC_HUE) == 0) {
+    // get hue
+  } else if (strcmp(topic, MQTT_TOPIC_SETHUE) == 0) {
+    // set hue
+  } else if (strcmp(topic, MQTT_TOPIC_SATURATION) == 0) {
+    // get saturation
+  } else if (strcmp(topic, MQTT_TOPIC_SETSATURATION) == 0) {
+    // set saturation
+  }
+}
+
+void bindOTAEvents(){
+  #ifdef DEBUG
+  ArduinoOTA.onStart([]() {
+    Serial.println("Start updating ");
+  });
+  #endif
+
+  ArduinoOTA.onEnd([]() {
+    #ifdef DEBUG
+    Serial.println("\nEnd");
+    #endif
+
+    OTAUpdate =false;
+    delay(100);
+    ESP.restart();
+  });
+
+  #ifdef DEBUG
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  #endif
+
+  ArduinoOTA.onError([](ota_error_t error) {
+
+    #ifdef DEBUG
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+    #endif
+
+    delay(100);
+    ESP.restart();
+  });
+
+  ArduinoOTA.setPort(9069);
+  ArduinoOTA.setPassword("M4yTh3F0rc3B3W1thY0u");
+  ArduinoOTA.begin();
+}
+
+void setup_wifi() {
+  int attempts = 0;
+  delay(10);
+
+  #ifdef DEBUG
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(WLAN_SSID);
+  #endif
+
+  WiFi.begin(WLAN_SSID, WLAN_PWD);
+
+  while (WiFi.status() != WL_CONNECTED && ++attempts < MAX_WIFI_CONNECT_TRY) {
+    delay(500);
+
+    #ifdef DEBUG
+    Serial.print(".");
+    #endif
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+
+    #ifdef DEBUG
+    Serial.println("Wifi Failed.. Restarting");
+    #endif
+
+    delay(100);
+    ESP.restart();
+  }
+
+  #ifdef DEBUG
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+  #endif
+}
+
+void reconnect() {
+  int attempts = 0;
+
+  while (!client.connected() && ++attempts < MAX_MQTT_CONNECT_TRY) {
+    #ifdef DEBUG
+    Serial.print("Attempting MQTT connection...");
+    Serial.print(attempts);
+    #endif
+
+    String clientId = "ESP8266Client-";
+    clientId += String(random(0xffff), HEX);
+    // Attempt to connect
+    if (client.connect(clientId.c_str())) {
+      #ifdef DEBUG
+      Serial.println("connected");
+      #endif
+
+      client.subscribe(MQTT_TOPIC_SUB);
+
+      #ifdef DEBUG
+      Serial.println("Subscribed to MQTT topics");
+      #endif
+    } else {
+      #ifdef DEBUG
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      #endif
+
+      delay(5000);
+    }
+  }
+
+  if (!client.connected()) {
+    #ifdef DEBUG
+    Serial.println("Mqtt Failed.. Restarting");
+    #endif
+
+    delay(100);
+    ESP.restart();
+  }
+}
+
+void handleRoot() {
+  #ifdef DEBUG
+  Serial.println("GOT OTA cmd");
+  #endif
+
+  OTAUpdate = true;
+  OTAend = millis() + OTATimeout;
+  webServer.send(200, "text/plain", "GO");
+
+  #ifdef DEBUG
+  Serial.println("Start OTA");
+  #endif
 }
