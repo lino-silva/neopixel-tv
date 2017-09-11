@@ -1,5 +1,4 @@
 #define FASTLED_ESP8266_RAW_PIN_ORDER
-#include "FastLED.h"
 #include "config.h"
 
 #include <PubSubClient.h>
@@ -15,6 +14,7 @@
 #include <ESP8266WebServer.h>
 
 inline int max(int a, int b) { return ((a)>(b)?(a):(b)); }
+inline int min(int a, int b) { return ((a)<(b)?(a):(b)); }
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -24,23 +24,22 @@ bool OTAUpdate = false;
 long OTATimeout = 60*1000;
 long OTAend=0;
 
+int lastMsg;
+CHSV lastPublishedColor;
+
 //COMMANDS
 uint8_t _State;
 uint8_t tv_on = 0;
-
-//NeoPixel
-uint8_t INDEX_H = 0;
-uint8_t INDEX_S = 1;
-uint8_t INDEX_V = 2;
 
 bool updateColor = false;
 uint8_t _StepCount = 1;
 
 CRGB _leds[NUM_LEDS];
+static CHSV _hsvStartup = {0, 0, 255};
 // Set initial color
-CHSV _hsvCurrent = {255, 255, 255};
+CHSV _hsvCurrent = { 0, 0, 255 };
 // Initialize color variables
-CHSV _hsvUpdated = {255, 255, 255};
+CHSV _hsvUpdated = _hsvStartup;
 
 void setup() {
   pinMode(USB_PIN, INPUT);
@@ -88,6 +87,29 @@ void loop() {
     // read the input pin
     uint8_t is_tv_on = digitalRead(USB_PIN);
 
+    long now = millis();
+    if (now - lastMsg > MQTT_MESSAGE_INTERVAL) {
+      lastMsg = now;
+
+      if (lastPublishedColor == _hsvCurrent) {
+        lastPublishedColor = _hsvCurrent;
+
+        bool isPowerOn = _hsvCurrent.h != 0 && _hsvCurrent.s != 0 && _hsvCurrent.v != 0;
+        const char *powerOn = isPowerOn?"true":"false";
+        char currentHue[4];
+        char currentSat[4];
+        char currentVal[4];
+        sprintf(currentHue, "%03i", _hsvCurrent.h * 360 / 255);
+        sprintf(currentSat, "%03i", _hsvCurrent.s * 100 / 255);
+        sprintf(currentVal, "%03i", _hsvCurrent.v * 100 / 255);
+
+        // client.publish(MQTT_TOPIC_POWER, powerOn);
+        // client.publish(MQTT_TOPIC_BRIGHTNESS, currentVal);
+        // client.publish(MQTT_TOPIC_HUE, currentHue);
+        // client.publish(MQTT_TOPIC_SATURATION, currentSat);
+      }
+    }
+
     // if (is_tv_on != tv_on) {
     //   _State = UPDATE_STATE;
     //   updateColor = true;
@@ -103,7 +125,7 @@ void loop() {
   }
 }
 
-void mainLoop(){
+void mainLoop() {
   if (_State==UPDATE_STATE) {
     if (updateColor) {
       _hsvCurrent.h = calculateVal(_hsvCurrent.h, _hsvUpdated.h);
@@ -135,8 +157,7 @@ void mainLoop(){
   }
 }
 
-//Serial
-void setNewColor(CHSV hsv){
+void setNewColor(CHSV hsv) {
   #ifdef DEBUG
   Serial.println("Update Values");
   #endif
@@ -173,9 +194,7 @@ void setBrightness(int brightness) {
 }
 
 void setColor(CHSV color) {
-  for(int i=0; i<NUM_LEDS; i++){
-    _leds[i].setHSV(color.h, color.s, color.v);
-  }
+  fill_solid(_leds, NUM_LEDS, color);
 
   FastLED.setBrightness(color.v);
   _hsvCurrent.h = _hsvUpdated.h = color.h;
@@ -184,14 +203,10 @@ void setColor(CHSV color) {
   FastLED.show();
 }
 
-int percentToRawValue(int percent){
-  return 2.55*percent;
-}
-
 /*
   Test Helpers
 */
-void blink () {
+void blink() {
   setColor(CHSV(255, 255, 255));
   delay(100);
   setColor(CHSV(0, 0, 0));
@@ -236,34 +251,44 @@ int calculateStep () {
 }
 
 void mqtt_callback (const char* topic, byte* payload, unsigned int length) {
+  payload[length] = '\0';
+  char* msg = (char*) payload;
+
   #ifdef DEBUG
   Serial.print("Got message from ");
   Serial.println(topic);
   Serial.print("Payload: ");
-  Serial.println((int) payload[0]);
+  Serial.println(msg);
+  Serial.println(atoi(msg));
   #endif
 
-  if (strcmp(topic, MQTT_TOPIC_POWER)==0) {
-    // get power status
+  CHSV newColor;
+  bool colorChanged = false;
 
-  } else if (strcmp(topic, MQTT_TOPIC_SETPOWER) == 0) {
-    // set power status
-  } else if (strcmp(topic, MQTT_TOPIC_BRIGHTNESS) == 0) {
-    // get brightness
+  if (strcmp(topic, MQTT_TOPIC_SETPOWER) == 0) {
+    newColor = _hsvStartup;
+    colorChanged = true;
   } else if (strcmp(topic, MQTT_TOPIC_SETBRIGHTNESS) == 0) {
-    // set brightness
-  } else if (strcmp(topic, MQTT_TOPIC_HUE) == 0) {
-    // get hue
+    newColor = CHSV(_hsvCurrent.h, _hsvCurrent.s, atoi(msg) * 255 / 100);
+    colorChanged = true;
   } else if (strcmp(topic, MQTT_TOPIC_SETHUE) == 0) {
-    // set hue
-  } else if (strcmp(topic, MQTT_TOPIC_SATURATION) == 0) {
-    // get saturation
+    Serial.println(atoi(msg) * 255 / 360);
+    newColor = CHSV(atoi(msg) * 255 / 360, _hsvCurrent.s, _hsvCurrent.v);
+    colorChanged = true;
   } else if (strcmp(topic, MQTT_TOPIC_SETSATURATION) == 0) {
-    // set saturation
+    newColor = CHSV(_hsvCurrent.h, atoi(msg) * 255 / 100, _hsvCurrent.v);
+    colorChanged = true;
+  }
+
+  if (colorChanged) {
+    #ifdef DEBUG
+    Serial.println("Color changed, updating...");
+    #endif
+    setNewColor(newColor);
   }
 }
 
-void bindOTAEvents(){
+void bindOTAEvents() {
   #ifdef DEBUG
   ArduinoOTA.onStart([]() {
     Serial.println("Start updating ");
