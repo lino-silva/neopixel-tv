@@ -266,8 +266,10 @@ void mqtt_callback (const char* topic, byte* payload, unsigned int length) {
   bool colorChanged = false;
 
   if (strcmp(topic, MQTT_TOPIC_SETPOWER) == 0) {
-    newColor = _hsvStartup;
-    colorChanged = true;
+    if (_hsvCurrent.v == 0) {
+      newColor = _hsvStartup;
+      colorChanged = true;
+    }
   } else if (strcmp(topic, MQTT_TOPIC_SETBRIGHTNESS) == 0) {
     newColor = CHSV(_hsvCurrent.h, _hsvCurrent.s, atoi(msg) * 255 / 100);
     colorChanged = true;

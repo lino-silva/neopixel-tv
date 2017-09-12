@@ -34,3 +34,5 @@ include paths and build them.
 
 More information about PlatformIO Library Dependency Finder
 - http://docs.platformio.org/page/librarymanager/ldf.html
+
+curl http://192.168.1.117/update && ~/.platformio/packages/framework-arduinoespressif8266/tools/espota.py --ip 192.168.1.117 --port 9069 --file ./.pioenvs/nodemcuv2/firmware.bin --auth M4yTh3F0rc3B3W1thY0u
