@@ -1,23 +1,19 @@
 #include "FastLED.h"
 
+#define DEBUG 0
+
 #define NUM_LEDS 54
 #define DATA_PIN 4
 #define USB_PIN 15
 
-//STATES
-#define INITIAL_STATE 0
-#define UPDATE_STATE 1
-
 #define MAX_MQTT_CONNECT_TRY 30
-#define MQTT_SERVER "[REDACTED]"
+#define MQTT_SERVER "[MQTT_SERVER]"
 #define MQTT_PORT 1883
 #define MQTT_MESSAGE_INTERVAL 5000
 
-#define MAX_WIFI_CONNECT_TRY 60
-#define WLAN_SSID "[REDACTED]"
-#define WLAN_PWD "[REDACTED]"
-
-#define DEBUG 1
+#define MAX_WIFI_CONNECT_TRY 1000
+#define WLAN_SSID "[SSID]"
+#define WLAN_PWD "[PASSWORD]"
 
 #define MQTT_TOPIC_SUB "home/livingroom/tvbacklight/#"
 #define MQTT_TOPIC_POWER "home/livingroom/tvbacklight/powerStatus"

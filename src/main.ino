@@ -3,14 +3,11 @@
 
 #include <PubSubClient.h>
 
-#include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
+#include <ESP8266mDNS.h>
 
 #include <ESP8266WiFi.h>
-#include <PubSubClient.h>
-#include <EEPROM.h>
-
 #include <ESP8266WebServer.h>
 
 inline int max(int a, int b) { return ((a)>(b)?(a):(b)); }
@@ -28,22 +25,24 @@ int lastMsg;
 CHSV lastPublishedColor;
 
 //COMMANDS
-uint8_t _State;
+uint8_t _colorNeedsUpdating;
 uint8_t tv_on = 0;
 
-bool updateColor = false;
 uint8_t _StepCount = 1;
 
 CRGB _leds[NUM_LEDS];
-static CHSV _hsvStartup = {0, 0, 255};
+static CHSV _hsvStartup = {255, 0, 255};
+static CHSV _hsvOff = {0, 0, 0};
 // Set initial color
-CHSV _hsvCurrent = { 0, 0, 255 };
+CHSV _hsvCurrent = _hsvOff;
 // Initialize color variables
-CHSV _hsvUpdated = _hsvStartup;
+CHSV _hsvUpdated = _hsvOff;
 
 void setup() {
   pinMode(USB_PIN, INPUT);
+  #ifdef DEBUG
   Serial.begin(115200);
+  #endif
 
   // WIFI and OTA
   setup_wifi();
@@ -64,8 +63,7 @@ void setup() {
   FastLED.addLeds<NEOPIXEL, DATA_PIN>(_leds, NUM_LEDS);
   FastLED.setDither(0);
 
-  _State = UPDATE_STATE;
-  updateColor = true;
+  setNewColor(_hsvStartup);
 }
 
 void loop() {
@@ -111,8 +109,7 @@ void loop() {
     }
 
     // if (is_tv_on != tv_on) {
-    //   _State = UPDATE_STATE;
-    //   updateColor = true;
+    //   _colorNeedsUpdating = true;
     // }
     //
     // if (tv_on == 0) {
@@ -126,17 +123,13 @@ void loop() {
 }
 
 void mainLoop() {
-  if (_State==UPDATE_STATE) {
-    if (updateColor) {
-      _hsvCurrent.h = calculateVal(_hsvCurrent.h, _hsvUpdated.h);
-      _hsvCurrent.s = calculateVal(_hsvCurrent.s, _hsvUpdated.s);
-
-      fill_solid(_leds, NUM_LEDS, _hsvCurrent);
-    }
-
+  if (_colorNeedsUpdating) {
+    _hsvCurrent.h = calculateVal(_hsvCurrent.h, _hsvUpdated.h);
+    _hsvCurrent.s = calculateVal(_hsvCurrent.s, _hsvUpdated.s);
     _hsvCurrent.v = calculateVal(_hsvCurrent.v, _hsvUpdated.v);
-    FastLED.setBrightness(_hsvCurrent.v);
     FastLED.show();
+    // fill_solid_skip_first(_leds, NUM_LEDS, _hsvCurrent);
+    fill_solid(_leds, NUM_LEDS, _hsvCurrent);
 
     #ifdef DEBUG
     Serial.print(_hsvCurrent.h);
@@ -146,13 +139,10 @@ void mainLoop() {
     Serial.println(_hsvCurrent.v);
     #endif
 
-    if (_hsvCurrent.h != _hsvUpdated.h || _hsvCurrent.s != _hsvUpdated.s) {
-      updateColor = true;
-    } else {
-      updateColor = false;
-      if (_hsvCurrent.v == _hsvUpdated.v) {
-        _State = INITIAL_STATE;
-      }
+    if (_hsvCurrent.h == _hsvUpdated.h &&
+        _hsvCurrent.s == _hsvUpdated.s &&
+        _hsvCurrent.v == _hsvUpdated.v) {
+      _colorNeedsUpdating = false;
     }
   }
 }
@@ -168,7 +158,6 @@ void setNewColor(CHSV hsv) {
   _hsvUpdated.v = hsv.v;
 
   calculateStep();
-  updateColor = true;
 
   #ifdef DEBUG
   Serial.println("New Values:");
@@ -181,35 +170,7 @@ void setNewColor(CHSV hsv) {
   Serial.println(_StepCount);
   #endif
 
-  _State = UPDATE_STATE;
-}
-
-/*
-  NeoPixel
-*/
-void setBrightness(int brightness) {
-  FastLED.setBrightness(brightness);
-  _hsvCurrent.v = _hsvUpdated.v = brightness;
-  FastLED.show();
-}
-
-void setColor(CHSV color) {
-  fill_solid(_leds, NUM_LEDS, color);
-
-  FastLED.setBrightness(color.v);
-  _hsvCurrent.h = _hsvUpdated.h = color.h;
-  _hsvCurrent.s = _hsvUpdated.s = color.s;
-  _hsvCurrent.v = _hsvUpdated.v = color.v;
-  FastLED.show();
-}
-
-/*
-  Test Helpers
-*/
-void blink() {
-  setColor(CHSV(255, 255, 255));
-  delay(100);
-  setColor(CHSV(0, 0, 0));
+  _colorNeedsUpdating = true;
 }
 
 /*
@@ -231,23 +192,24 @@ int calculateVal(int val, int finalVal) {
 }
 
 int calculateStep () {
-  uint8_t hdiff = abs(_hsvCurrent.h-_hsvUpdated.h);
-  uint8_t sdiff = abs(_hsvCurrent.s-_hsvUpdated.s);
-  uint8_t vdiff = abs(_hsvCurrent.v-_hsvUpdated.v);
-  int max_val = max(max(hdiff, sdiff), vdiff);
-  if (max_val > 63){
-    if (max_val > 127){
-      if (max_val > 191){
-        _StepCount = 5;
-      } else {
-        _StepCount = 3;
-      }
-    } else {
-      _StepCount = 2;
-    }
-  } else {
-    _StepCount = 1;
-  }
+  // uint8_t hdiff = abs(_hsvCurrent.h-_hsvUpdated.h);
+  // uint8_t sdiff = abs(_hsvCurrent.s-_hsvUpdated.s);
+  // uint8_t vdiff = abs(_hsvCurrent.v-_hsvUpdated.v);
+  // int max_val = max(max(hdiff, sdiff), vdiff);
+  // if (max_val > 63){
+  //   if (max_val > 127){
+  //     if (max_val > 191){
+  //       _StepCount = 5;
+  //     } else {
+  //       _StepCount = 3;
+  //     }
+  //   } else {
+  //     _StepCount = 2;
+  //   }
+  // } else {
+  //   _StepCount = 1;
+  // }
+  _StepCount = 1;
 }
 
 void mqtt_callback (const char* topic, byte* payload, unsigned int length) {
@@ -266,15 +228,18 @@ void mqtt_callback (const char* topic, byte* payload, unsigned int length) {
   bool colorChanged = false;
 
   if (strcmp(topic, MQTT_TOPIC_SETPOWER) == 0) {
-    if (_hsvCurrent.v == 0) {
+    bool setPowerOn = strcmp(msg, "true") == 0;
+    if (setPowerOn && _hsvCurrent.v == 0) {
       newColor = _hsvStartup;
+      colorChanged = true;
+    } else if (!setPowerOn && _hsvCurrent.v != 0) {
+      newColor = _hsvOff;
       colorChanged = true;
     }
   } else if (strcmp(topic, MQTT_TOPIC_SETBRIGHTNESS) == 0) {
     newColor = CHSV(_hsvCurrent.h, _hsvCurrent.s, atoi(msg) * 255 / 100);
     colorChanged = true;
   } else if (strcmp(topic, MQTT_TOPIC_SETHUE) == 0) {
-    Serial.println(atoi(msg) * 255 / 360);
     newColor = CHSV(atoi(msg) * 255 / 360, _hsvCurrent.s, _hsvCurrent.v);
     colorChanged = true;
   } else if (strcmp(topic, MQTT_TOPIC_SETSATURATION) == 0) {
@@ -346,7 +311,7 @@ void setup_wifi() {
   WiFi.begin(WLAN_SSID, WLAN_PWD);
 
   while (WiFi.status() != WL_CONNECTED && ++attempts < MAX_WIFI_CONNECT_TRY) {
-    delay(500);
+    delay(1000);
 
     #ifdef DEBUG
     Serial.print(".");
